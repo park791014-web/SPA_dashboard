@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>부산동성고등학교 성적 분석 대시보드</title>
+    <!-- Google Fonts: Inter & Noto Sans KR -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+    <!-- Lucide Icons (Offline) -->
+    <script src="lucide.min.js"></script>
+    <!-- SheetJS (Excel Parser, Offline) -->
+    <script src="xlsx.full.min.js"></script>
+    <!-- Chart.js (Visualization, Offline) -->
+    <script src="chart.js"></script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-logo">
+                <i data-lucide="graduation-cap" class="logo-icon"></i>
+                <div class="logo-text">
+                    <h1>부산동성고등학교</h1>
+                    <span>학생 성적 분석 대시보드</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="exportExcelBtn" class="btn btn-success" style="display: none;">
+                    <i data-lucide="download"></i>
+                    <span>엑셀로 저장</span>
+                </button>
+                <button id="resetBtn" class="btn btn-danger" style="display: none;">
+                    <i data-lucide="refresh-cw"></i>
+                    <span>대시보드 초기화</span>
+                </button>
+                <button id="loadSampleBtn" class="btn btn-secondary">
+                    <i data-lucide="folder-open"></i>
+                    <span>'성적파일' 폴더 성적 자동 로드</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="app-main">
+            <!-- Sidebar: Data Upload & Student List -->
+            <aside class="sidebar">
+                <!-- Data Source Card -->
+                <div class="card data-source-card">
+                    <div class="card-header">
+                        <i data-lucide="upload-cloud"></i>
+                        <h2>성적 데이터 입력</h2>
+                    </div>
+                    <div class="tabs-header">
+                        <button class="tab-btn active" data-tab="upload-tab">엑셀 파일 업로드</button>
+                        <button class="tab-btn" data-tab="paste-tab">직접 붙여넣기</button>
+                    </div>
+                    
+                    <div class="tab-content active" id="upload-tab">
+                        <div class="file-drop-zone" id="dropZone">
+                            <i data-lucide="file-spreadsheet" class="drop-icon"></i>
+                            <p>엑셀 파일(.xlsx, .csv)들을 드래그하거나 클릭하여 다중 업로드하세요</p>
+                            <input type="file" id="fileInput" accept=".xlsx, .xls, .csv" style="display: none;" multiple>
+                            <input type="file" id="folderInput" webkitdirectory directory multiple style="display: none;">
+                        </div>
+                    </div>
+                    
+                    <div class="tab-content" id="paste-tab">
+                        <div class="paste-zone">
+                            <textarea id="pasteInput" placeholder="엑셀 또는 스프레드시트의 표 데이터를 전체 복사(Ctrl+C)하여 여기에 붙여넣으세요(Ctrl+V).&#10;구분자(탭, 쉼표)는 자동으로 파싱됩니다.&#10;필수 컬럼: 학년, 학번, 이름, 과목명, 단위수, 등급, 과목군"></textarea>
+                            <button id="parsePasteBtn" class="btn btn-primary btn-block">
+                                <i data-lucide="sparkles"></i>
+                                <span>데이터 분석 실행</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Uploaded Files List -->
+                    <div id="loadedFilesContainer" class="loaded-files-container" style="display: none;">
+                        <div class="loaded-files-header">
+                            <i data-lucide="file-check"></i>
+                            <span>업로드된 학급 파일 (<span id="fileCount">0</span>)</span>
+                        </div>
+                        <ul id="loadedFilesList" class="loaded-files-list" style="display: none;"></ul>
+                    </div>
+                </div>
+
+                <!-- Student List Card -->
+                <div class="card student-list-card">
+                    <div class="card-header">
+                        <i data-lucide="users"></i>
+                        <h2>학생 목록 (<span id="studentCount">0</span>명)</h2>
+                    </div>
+                    <div class="search-sort-row">
+                        <div class="search-box">
+                            <i data-lucide="search"></i>
+                            <input type="text" id="searchBar" placeholder="학생 이름/학번 검색...">
+                        </div>
+                        <select id="studentSortSelect" class="form-select sort-select">
+                            <option value="name">이름순</option>
+                            <option value="id">학번순</option>
+                            <option value="score">등급순 (우수)</option>
+                        </select>
+                    </div>
+                    <div class="student-table-container">
+                        <table class="student-table">
+                            <thead>
+                                <tr>
+                                    <th>이름</th>
+                                    <th>학년 정보</th>
+                                    <th>가중 평균</th>
+                                </tr>
+                            </thead>
+                            <tbody id="studentListBody">
+                                <tr>
+                                    <td colspan="3" class="empty-state">
+                                        데이터를 입력하면 학생 목록이 표시됩니다.
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Dashboard Content: Detailed Report -->
+            <section class="dashboard-content">
+                <!-- Welcome View -->
+                <div class="welcome-container" id="welcomeContainer">
+                    <div class="welcome-inner">
+                        <i data-lucide="bar-chart-3" class="welcome-icon"></i>
+                        <h2>성적 분석 대시보드에 오신 것을 환영합니다</h2>
+                        <p>성적 파일을 드래그앤드롭하거나 복사하여 입력해 주세요. 아래 버튼으로 '성적파일' 폴더 안의 성적 엑셀 파일을 일괄 반영하실 수 있습니다.</p>
+                        <button id="welcomeSampleBtn" class="btn btn-primary">
+                            <i data-lucide="folder-open"></i>
+                            <span>'성적파일' 폴더 성적 자동 로드하기</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Report Container (Hidden initially) -->
+                <div class="report-container" id="reportContainer" style="display: none;">
+                    <!-- Student Profile Section -->
+                    <div class="report-section profile-section">
+                        <div class="student-profile">
+                            <div class="avatar">
+                                <span id="studentAvatar">동</span>
+                            </div>
+                            <div class="student-info">
+                                <div class="student-name-row">
+                                    <h2 id="reportStudentName">김동성</h2>
+                                    <span class="badge" id="reportStatusBadge">3개년 통합 완료</span>
+                                </div>
+                                <div class="student-id-history" id="reportStudentIdHistory">
+                                    <!-- Dynamic content -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Summary Cards Grid -->
+                    <div class="summary-cards-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon-wrapper blue">
+                                <i data-lucide="calculator"></i>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-label">단순 등급 평균</span>
+                                <h3 class="stat-value" id="simpleAverageValue">1.00</h3>
+                                <span class="stat-desc">모든 이수 과목 등급의 단순 평균</span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon-wrapper purple">
+                                <i data-lucide="line-chart"></i>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-label">단위수 반영 평균</span>
+                                <h3 class="stat-value" id="weightedAverageValue">1.00</h3>
+                                <span class="stat-desc">(등급 × 단위수) 합산 가중평균</span>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon-wrapper orange">
+                                <i data-lucide="book-open"></i>
+                            </div>
+                            <div class="stat-content">
+                                <span class="stat-label">총 이수 단위수</span>
+                                <h3 class="stat-value" id="totalUnitsValue">0</h3>
+                                <span class="stat-desc">3개년 통합 이수 단위수 총합</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Charts Grid -->
+                    <div class="charts-grid">
+                        <div class="card chart-card">
+                            <div class="card-header">
+                                <i data-lucide="pie-chart"></i>
+                                <h2>과목군별 평균 등급 (방사형)</h2>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="radarChart"></canvas>
+                            </div>
+                        </div>
+                        <div class="card chart-card">
+                            <div class="card-header">
+                                <i data-lucide="bar-chart-horizontal"></i>
+                                <h2>과목군별 등급 분석 (막대)</h2>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="barChart"></canvas>
+                            </div>
+                        </div>
+                        <!-- Trend Chart (Line) -->
+                        <div class="card chart-card trend-chart-card">
+                            <div class="card-header">
+                                <i data-lucide="trending-up"></i>
+                                <h2>학기별 과목군 및 전체 평균등급 변화 추이</h2>
+                            </div>
+                            <div class="chart-wrapper">
+                                <canvas id="trendChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Detailed Grades Table -->
+                    <div class="card grades-detail-card">
+                        <div class="card-header">
+                            <i data-lucide="list-filter"></i>
+                            <h2>상세 이수 성적 내역</h2>
+                            <div class="filter-controls">
+                                <select id="gradeFilterSelect" class="form-select">
+                                    <option value="all">전체 학년/학기</option>
+                                    <option value="1-all">1학년 전체</option>
+                                    <option value="1-1">1학년 1학기</option>
+                                    <option value="1-2">1학년 2학기</option>
+                                    <option value="2-all">2학년 전체</option>
+                                    <option value="2-1">2학년 1학기</option>
+                                    <option value="2-2">2학년 2학기</option>
+                                    <option value="3-all">3학년 전체</option>
+                                    <option value="3-1">3학년 1학기</option>
+                                    <option value="3-2">3학년 2학기</option>
+                                </select>
+                                <select id="groupFilterSelect" class="form-select">
+                                    <option value="all">전체 과목군</option>
+                                    <option value="국어">국어</option>
+                                    <option value="수학">수학</option>
+                                    <option value="영어">영어</option>
+                                    <option value="사회">사회</option>
+                                    <option value="과학">과학</option>
+                                    <option value="기타">기타</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="table-container">
+                            <table class="grades-table">
+                                <thead>
+                                    <tr>
+                                        <th>학년 / 학기</th>
+                                        <th>학번</th>
+                                        <th>과목군</th>
+                                        <th>과목명</th>
+                                        <th>단위수</th>
+                                        <th>성취도</th>
+                                        <th>등급</th>
+                                        <th>점수 지표</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="detailedGradesBody">
+                                    <!-- Dynamic content -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Custom Script -->
+    <script src="app.js"></script>
+</body>
+</html>
