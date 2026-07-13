@@ -172,12 +172,52 @@ async function handleMultipleFiles(files) {
 
 // 개별 파일 읽기 (Promise 기반 비동기화)
 function parseSingleExcelFile(file) {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = function(e) {
+        reader.onload = async function(e) {
             try {
-                const data = new Uint8Array(e.target.result);
+                let data = new Uint8Array(e.target.result);
+                
+                // 1. 보안용 암호화 파일인지 매직 바이트 검사
+                if (isSecureFile(data)) {
+                    const password = prompt("🔒 이 파일은 개인정보 보호를 위해 암호화된 파일입니다.\n복호화를 위한 비밀번호를 입력해주세요:", "");
+                    if (password === null) {
+                        reject(new Error("복호화가 취소되었습니다."));
+                        return;
+                    }
+                    try {
+                        data = await decryptData(data, password.trim());
+                        showCustomToast("보안 파일이 성공적으로 복호화되었습니다.", "success");
+                    } catch (decErr) {
+                        alert("❌ 비밀번호가 올바르지 않거나 파일이 손상되었습니다.");
+                        reject(new Error("비밀번호가 올바르지 않습니다."));
+                        return;
+                    }
+                }
+                
                 const workbook = XLSX.read(data, { type: 'array' });
+                
+                // 만약 대시보드 백업용 원전자료 시트가 존재한다면 바로 파싱하여 반환
+                if (workbook.SheetNames.includes("원전자료")) {
+                    const worksheet = workbook.Sheets["원전자료"];
+                    const rawJson = XLSX.utils.sheet_to_json(worksheet);
+                    
+                    const parsed = rawJson.map(row => ({
+                        학년: parseInt(row["학년"] || 1),
+                        학기: parseInt(row["학기"] || 1),
+                        학번: String(row["학번"] || "").trim(),
+                        이름: String(row["이름"] || "").trim(),
+                        과목명: String(row["과목명"] || "").trim(),
+                        단위수: parseFloat(row["단위수"] || 1) || 1,
+                        등급: String(row["등급"] || "").trim() === "P" ? "P" : (parseInt(row["등급"]) || 1),
+                        성취도: String(row["성취도"] || "").trim(),
+                        과목군: String(row["과목군"] || "").trim()
+                    })).filter(row => row.이름 && row.과목명);
+                    
+                    resolve(parsed);
+                    return;
+                }
+                
                 const firstSheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheetName];
                 const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
@@ -2179,6 +2219,21 @@ function exportToExcel() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "성적요약");
     
+    // 2. 원전자료 시트 추가 (다시 업로드할 때 바로 불러올 수 있는 백업데이터)
+    const rawGradesData = AppState.rawGrades.map(row => ({
+        학년: row.학년,
+        학기: row.학기,
+        학번: row.학번,
+        이름: row.이름,
+        과목명: row.과목명,
+        단위수: row.단위수,
+        등급: row.등급,
+        성취도: row.성취도,
+        과목군: row.과목군
+    }));
+    const rawWorksheet = XLSX.utils.json_to_sheet(rawGradesData);
+    XLSX.utils.book_append_sheet(workbook, rawWorksheet, "원전자료");
+    
     // 열 너비 자동 조절
     const max_widths = [];
     data.forEach(row => {
@@ -2192,5 +2247,223 @@ function exportToExcel() {
     });
     worksheet["!cols"] = max_widths.map(w => ({ wch: w }));
 
-    XLSX.writeFile(workbook, "부산동성고_학생_내신등급_요약.xlsx");
+    // 3. 비밀번호 보안 설정 여부 묻기
+    const password = prompt(
+        "🔒 [개인정보 보호를 위한 파일 암호화 설정]\n\n" +
+        "이 성적 분석 파일에 비밀번호를 설정하시겠습니까?\n\n" +
+        "⚠️ 중요 주의사항:\n" +
+        "비밀번호로 암호화된 보안 파일(.secure.xlsx)은 보안을 위해 본문 전체가 완전히 난독화됩니다. 따라서 Microsoft Excel 이나 한글/한컴셀 등 일반 스프레드시트 프로그램에서 직접 열면 '손상된 파일'로 표시되며 열리지 않습니다. 오직 '학생 성적 분석 대시보드' 웹프로그램에 다시 업로드(드래그)하여 비밀번호를 기입해야만 온전하게 읽고 복원할 수 있습니다.\n\n" +
+        "비밀번호를 입력하고 확인을 누르면 암호화된 대시보드 전용 보안 파일로 다운로드되며, 취소나 빈칸 입력 시 누구나 바로 열 수 있는 일반 엑셀 파일로 다운로드됩니다:",
+        ""
+    );
+    
+    if (password !== null && password.trim() !== "") {
+        // 암호화된 파일로 다운로드
+        // 1) XLSX.write를 통해 array buffer 형식으로 변환
+        const wbout = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        
+        // 2) AES-GCM 암호화 수행
+        encryptData(new Uint8Array(wbout), password.trim()).then(encryptedBytes => {
+            const blob = new Blob([encryptedBytes], { type: "application/octet-stream" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "학생성적분석대시보드_전용_부산동성고_학생_내신등급_요약.secure.xlsx";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showCustomToast("비밀번호 암호화가 완료되어 보안 파일로 다운로드되었습니다.", "success");
+        }).catch(err => {
+            console.error("암호화 에러:", err);
+            alert("암호화 처리 중 오류가 발생했습니다.");
+        });
+    } else {
+        // 일반 엑셀 파일로 다운로드
+        XLSX.writeFile(workbook, "부산동성고_학생_내신등급_요약.xlsx");
+        showCustomToast("일반 엑셀 파일로 다운로드되었습니다.", "info");
+    }
+}
+
+// ==================== 보안 암호화/복호화 및 토스트 유틸리티 ====================
+
+// 범용 토스트 알림 표시
+function showCustomToast(message, type = "info") {
+    let container = document.getElementById("toastContainer");
+    if (!container) {
+        container = document.createElement("div");
+        container.id = "toastContainer";
+        container.style.position = "fixed";
+        container.style.top = "20px";
+        container.style.right = "20px";
+        container.style.zIndex = "9999";
+        container.style.display = "flex";
+        container.style.flexDirection = "column";
+        container.style.gap = "10px";
+        document.body.appendChild(container);
+    }
+    
+    if (!document.getElementById("toastStyles")) {
+        const style = document.createElement("style");
+        style.id = "toastStyles";
+        style.textContent = `
+            @keyframes slideIn {
+                from { opacity: 0; transform: translateY(-10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            .toast-alert {
+                animation: slideIn 0.3s ease-out;
+                border: 1px solid var(--border);
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    const toast = document.createElement("div");
+    toast.className = "toast-alert";
+    toast.style.backgroundColor = "var(--bg-card)";
+    
+    let leftBorderColor = "var(--primary-light)";
+    let icon = "ℹ️";
+    if (type === "success") {
+        leftBorderColor = "#22c55e"; // 초록색
+        icon = "🔒";
+    } else if (type === "error") {
+        leftBorderColor = "#ef4444"; // 빨간색
+        icon = "❌";
+    }
+    
+    toast.style.borderLeft = `4px solid ${leftBorderColor}`;
+    toast.style.color = "var(--text-primary)";
+    toast.style.padding = "12px 20px";
+    toast.style.borderRadius = "var(--radius-sm)";
+    toast.style.boxShadow = "var(--shadow-lg)";
+    toast.style.display = "flex";
+    toast.style.alignItems = "center";
+    toast.style.gap = "10px";
+    toast.style.fontFamily = "system-ui, sans-serif";
+    toast.style.fontSize = "0.85rem";
+    toast.style.fontWeight = "600";
+    
+    toast.innerHTML = `
+        <span style="font-size: 1.1rem;">${icon}</span>
+        <span>${message}</span>
+    `;
+    
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.transition = "opacity 0.5s ease, transform 0.5s ease";
+        toast.style.opacity = "0";
+        toast.style.transform = "translateY(-10px)";
+        setTimeout(() => {
+            toast.remove();
+        }, 500);
+    }, 4500);
+}
+
+// 보안용 파일 형식 매직바이트 검사 (DSHSSEC1)
+function isSecureFile(dataArray) {
+    const magic = new TextEncoder().encode("DSHSSEC1");
+    if (dataArray.length < magic.length) return false;
+    for (let i = 0; i < magic.length; i++) {
+        if (dataArray[i] !== magic[i]) return false;
+    }
+    return true;
+}
+
+// PBKDF2 및 AES-GCM 암호화
+async function encryptData(dataArray, password) {
+    const cryptoObj = window.crypto || window.msCrypto;
+    const salt = cryptoObj.getRandomValues(new Uint8Array(16));
+    const iv = cryptoObj.getRandomValues(new Uint8Array(12));
+    
+    const enc = new TextEncoder();
+    const keyMaterial = await cryptoObj.subtle.importKey(
+        "raw",
+        enc.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveBits", "deriveKey"]
+    );
+    
+    const key = await cryptoObj.subtle.deriveKey(
+        {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt"]
+    );
+    
+    const ciphertext = await cryptoObj.subtle.encrypt(
+        {
+            name: "AES-GCM",
+            iv: iv
+        },
+        key,
+        dataArray
+    );
+    
+    const magic = enc.encode("DSHSSEC1");
+    const result = new Uint8Array(magic.length + salt.length + iv.length + ciphertext.byteLength);
+    result.set(magic, 0);
+    result.set(salt, magic.length);
+    result.set(iv, magic.length + salt.length);
+    result.set(new Uint8Array(ciphertext), magic.length + salt.length + iv.length);
+    
+    return result;
+}
+
+// PBKDF2 및 AES-GCM 복호화
+async function decryptData(packedData, password) {
+    const cryptoObj = window.crypto || window.msCrypto;
+    const enc = new TextEncoder();
+    const magic = enc.encode("DSHSSEC1");
+    
+    for (let i = 0; i < magic.length; i++) {
+        if (packedData[i] !== magic[i]) {
+            throw new Error("NOT_SECURE_FILE");
+        }
+    }
+    
+    const salt = packedData.slice(8, 24);
+    const iv = packedData.slice(24, 36);
+    const ciphertext = packedData.slice(36);
+    
+    const keyMaterial = await cryptoObj.subtle.importKey(
+        "raw",
+        enc.encode(password),
+        "PBKDF2",
+        false,
+        ["deriveBits", "deriveKey"]
+    );
+    
+    const key = await cryptoObj.subtle.deriveKey(
+        {
+            name: "PBKDF2",
+            salt: salt,
+            iterations: 100000,
+            hash: "SHA-256"
+        },
+        keyMaterial,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["decrypt"]
+    );
+    
+    const decrypted = await cryptoObj.subtle.decrypt(
+        {
+            name: "AES-GCM",
+            iv: iv
+        },
+        key,
+        ciphertext
+    );
+    
+    return new Uint8Array(decrypted);
 }
